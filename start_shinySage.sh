@@ -1,7 +1,4 @@
 #!/bin/bash
-echo "[$(date)] Test" >> /tmp/test.log
-
-echo "[$(date)] Script started" >> /Users/service/github/autosage/debug.log
 
 export PATH="/usr/local/bin:$PATH"
 
