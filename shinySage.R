@@ -7,7 +7,7 @@ library(stringdist)
 # Load available categories
 subjects <- fromJSON("categories.json")
 
-# Define helper functions (same as before)
+# Define helper functions
 create_prompt <- function(title, description) {
   formatted_subjects <- paste0("['", paste(subjects, collapse = "', '"), "']")
   sprintf(
@@ -65,12 +65,36 @@ extract_keywords <- function(answer) {
   stringr::str_replace_all(items, "^['\"]|['\"]$", "")
 }
 
+query_categories1 <- function(title, abstract) {
+  prompt <- create_prompt(title, abstract)
+  payload <- list(model = "llama", messages = list(list(role = "user", content = prompt)), temperature = 0.0, max_tokens = 50)
+  res <- POST("http://140.247.120.209:8081/v1/chat/completions", body = toJSON(payload, auto_unbox = TRUE), encode = "json")
+  parsed <- fromJSON(content(res, as = "text", encoding = "UTF-8"))
+  print(str(parsed$choices$message$content))
+  message("CATEGORY FULL RESPONSE: ")
+  message(parsed$choices$message$content)
+  if (!is.null(parsed$choices) && length(parsed$choices) > 0) {
+    return(get_responses(parsed$choices$message$content))
+  } else {
+    return(character(0))
+  }
+}
+
 query_categories <- function(title, abstract) {
   prompt <- create_prompt(title, abstract)
   payload <- list(model = "llama", messages = list(list(role = "user", content = prompt)), temperature = 0.0, max_tokens = 50)
   res <- POST("http://140.247.120.209:8081/v1/chat/completions", body = toJSON(payload, auto_unbox = TRUE), encode = "json")
   parsed <- fromJSON(content(res, as = "text", encoding = "UTF-8"))
   get_responses(parsed$choices$message$content)
+}
+
+query_keywords1 <- function(title, abstract, subject) {
+  prompt <- create_keyword_prompt(title, abstract, subject)
+  payload <- list(model = "llama", messages = list(list(role = "user", content = prompt)), temperature = 0.0, max_tokens = 128)
+  res <- POST("http://140.247.120.209:8082/v1/chat/completions", body = toJSON(payload, auto_unbox = TRUE), encode = "json")
+  parsed <- fromJSON(content(res, as = "text", encoding = "UTF-8"))
+  message("KEYWORDS RESPONSE (", subject, "): ", parsed$choices[[1]]$message$content)
+  extract_keywords(parsed$choices[[1]]$message$content)
 }
 
 query_keywords <- function(title, abstract, subject) {
@@ -159,6 +183,22 @@ server <- function(input, output, session) {
         loadingAdd(FALSE)
       }
     })
+  })
+
+  output$category_tags <- renderUI({
+    req(categories())
+    tagList(
+      lapply(categories(), function(cat) {
+        remove_btn_id <- paste0("remove_category_", gsub("\\W", "_", cat))
+        observeEvent(input[[remove_btn_id]], {
+          categories(setdiff(categories(), cat))
+          keywords[[cat]] <- NULL
+        }, ignoreInit = TRUE)
+        div(style = "margin: 5px; display: inline-block;",
+            tags$span(cat, class = "badge bg-primary"),
+            actionButton(remove_btn_id, "x", class = "btn btn-danger btn-sm"))
+      })
+    )
   })
 
   output$keyword_lists <- renderUI({
