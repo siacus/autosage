@@ -15,4 +15,9 @@ Install these packages
 # try it
 http://140.247.120.209:8083/
 
+# launch the app at reboot/startup/login
+launchctl load ~/Library/LaunchAgents/com.service.shinySage.plist
+
+# launch llama-server(s) at reboot/startup/login
+
 

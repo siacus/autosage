@@ -152,6 +152,12 @@ ui <- dashboardPage(
 server <- function(input, output, session) {
   categories <- reactiveVal()
   keywords <- reactiveValues()
+  normalize_keywords <- function(x) {
+    tolower(trimws(x))
+  }
+  format_keywords <- function(x) {
+    tools::toTitleCase(trimws(x))
+  }
 
   observeEvent(input$generate, {
     cats <- NULL
@@ -167,23 +173,34 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$add_button, {
-    cat <- input$add_category
-    if (!(cat %in% categories())) {
-      categories(c(categories(), cat))
-      keywords[[cat]] <- query_keywords(input$title, input$description, cat)
-    }
-  })
+  cat <- input$add_category
+  new_kws <- trimws(query_keywords(input$title, input$description, cat))
+
+  existing_cats <- categories()
+  existing_kws <- keywords[[cat]]
+  
+  norm_existing <- normalize_keywords(existing_kws)
+  norm_new <- normalize_keywords(new_kws)
+  to_add <- new_kws[!(norm_new %in% norm_existing)]
+
+  if (!(cat %in% existing_cats)) {
+    categories(c(existing_cats, cat))
+  }
+
+  keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
+})
 
 observeEvent(input$add_keyword, {
   req(input$manual_keyword)
   cat <- input$selected_category
   if (!is.null(cat) && cat %in% categories()) {
-    new_keywords <- unlist(strsplit(input$manual_keyword, "\\s*[,;]\\s*"))
-    new_keywords <- unique(trimws(new_keywords))
+    new_keywords <- unique(trimws(unlist(strsplit(input$manual_keyword, "\\s*[,;]\\s*"))))
     existing <- keywords[[cat]]
-    to_add <- setdiff(new_keywords, existing)
+    norm_existing <- normalize_keywords(existing)
+    norm_new <- normalize_keywords(new_keywords)
+    to_add <- new_keywords[!(norm_new %in% norm_existing)]
     if (length(to_add) > 0) {
-      keywords[[cat]] <- c(existing, to_add)
+      keywords[[cat]] <- c(existing, format_keywords(to_add))
     }
   }
 })
@@ -204,7 +221,7 @@ observeEvent(input$add_keyword, {
     # Update keywords by category
     for (cat in matched_cats) {
       # Add all keywords under each category (could be improved with smarter mapping)
-      keywords[[cat]] <- md$keywords
+      keywords[[cat]] <- unique(format_keywords(md$keywords))
     }
   })
 })
@@ -219,18 +236,20 @@ observeEvent(input$regen_llm, {
     updated_cats <- unique(c(current_cats, new_cats))
     categories(updated_cats)
 
-    # For all categories (new and old), query new keywords and append without duplicates
     for (cat in new_cats) {
-      new_kws <- query_keywords(input$title, input$description, cat)
+      new_kws <- trimws(query_keywords(input$title, input$description, cat))
       existing_kws <- keywords[[cat]]
-      if (is.null(existing_kws)) {
-        keywords[[cat]] <- new_kws
-      } else {
-        keywords[[cat]] <- unique(c(existing_kws, new_kws))
-      }
+      
+      norm_existing <- normalize_keywords(existing_kws)
+      norm_new <- normalize_keywords(new_kws)
+      to_add <- new_kws[!(norm_new %in% norm_existing)]
+
+      keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
     }
   })
 })
+
+
 
 
 observeEvent(input$reset_all, {
