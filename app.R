@@ -107,7 +107,7 @@ get_dataset_metadata <- function(doi, base_url = "https://dataverse.harvard.edu"
 ui <- dashboardPage(
    dashboardHeader(
     # You can leave the default title empty or use it for the collapsed sidebar
-    title = "AI Helper",
+    title = "AutoSage - AI Helper",
     tags$li(class = "dropdown",
             style = "padding: 15px;",
             tags$h4("Dataset Metadata Creator", style = "margin: 0; color: white;")) 
@@ -126,6 +126,11 @@ ui <- dashboardPage(
       tags$hr(),
       actionButton("regen_llm", "Suggest More Metadata"),
       actionButton("reset_all", "Reset Data"),
+      tags$hr(),
+      tags$p(
+        HTML('Bugs or suggestions? <a href="https://github.com/siacus/autosage" target="_blank">Visit the GitHub repo</a>.'),
+        style = "text-align: center; font-size: 12px; color: #aaa; margin: 10px auto; padding: 0 10px;"
+      ),
      tags$hr(),
       tags$p("© 2025 S.M. Iacus (Shiny App, AI Model), B. Treacy (AI Model)",
         style = "text-align: center; font-size: 12px; color: #aaa; margin: 10px auto; padding: 0 10px; word-wrap: break-word; white-space: normal;")
