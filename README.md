@@ -32,7 +32,7 @@ Install these packages in your R environment
 # Try it!
 http://140.247.120.209:8083/
 
-#Other sys-adim info [section to be completed]
+# Other sys-admin info [section to be completed]
 
 ## launch the app at reboot/startup/login
 launchctl load ~/Library/LaunchAgents/com.service.shinySage.plist
