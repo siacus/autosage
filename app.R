@@ -59,20 +59,54 @@ append_keywords <- function(existing, new) {
 guess_repository_from_doi <- function(doi) {
   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
 
-  # Use prefixes or known patterns for now — expand as needed
+  # Known patterns (fast)
   if (grepl("^10\\.7910/DVN", doi, ignore.case = TRUE)) return("dataverse")
   if (grepl("^10\\.5281/zenodo", doi, ignore.case = TRUE)) return("zenodo")
   if (grepl("^10\\.6084/m9.figshare", doi, ignore.case = TRUE)) return("figshare")
   if (grepl("^10\\.5061/dryad", doi, ignore.case = TRUE)) return("dryad")
 
-  return("unknown")
+  # Fallback: resolve via DataCite
+  tryCatch({
+    res <- httr::GET(paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE)))
+    if (res$status_code != 200) return("unknown")
+
+    data <- jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"))
+    landing_url <- data$data$attributes$url
+
+    # Heuristic: Dataverse landing pages often have /citation?persistentId=doi:
+    if (grepl("/citation\\?persistentId=doi:", landing_url, fixed = FALSE)) {
+      return("dataverse")
+    }
+
+    return("unknown")
+  }, error = function(e) {
+    return("unknown")
+  })
 }
 
-get_metadata_from_dataverse <- function(doi, base_url = "https://dataverse.harvard.edu") {
+
+
+get_metadata_from_dataverse <- function(doi) {
+  # Clean and extract DOI
   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
-  url <- paste0(base_url, "/api/datasets/:persistentId")
-  res <- httr::GET(url, query = list(persistentId = paste0("doi:", doi)))
-  if (res$status_code != 200) stop("Failed to fetch dataset info.")
+
+  # Get correct base URL from DataCite
+  base_url <- tryCatch({
+    res <- httr::GET(paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE)))
+    if (res$status_code != 200) stop("Failed to resolve DOI")
+    data <- jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"))
+    landing_url <- data$data$attributes$url
+    sub("/citation\\?.*", "", landing_url)
+  }, error = function(e) {
+    warning("Could not resolve Dataverse base URL, falling back to Harvard")
+    "https://dataverse.harvard.edu"
+  })
+
+  # Query Dataverse API
+  api_url <- paste0(base_url, "/api/datasets/:persistentId")
+  res <- httr::GET(api_url, query = list(persistentId = paste0("doi:", doi)))
+  if (res$status_code != 200) stop("Failed to fetch dataset info from Dataverse.")
+
   data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
   fields <- data$data$latestVersion$metadataBlocks$citation$fields
 
@@ -84,11 +118,13 @@ get_metadata_from_dataverse <- function(doi, base_url = "https://dataverse.harva
   subjects <- tryCatch({ fields$value[fields$typeName == "subject"][[1]] }, error = function(e) character(0))
   keywords <- tryCatch({
     kw_block <- fields$value[[which(fields$typeName == "keyword")]]
-    kw_block$keywordValue$value
+    raw_keywords <- kw_block$keywordValue$value
+    split_keywords(raw_keywords)
   }, error = function(e) character(0))
 
   list(title = title, description = description, subjects = subjects, keywords = keywords)
 }
+
 
 get_metadata_from_dryad <- function(doi) {
   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
@@ -144,6 +180,15 @@ get_metadata_from_dryad <- function(doi) {
     keywords = keywords
   )
 }
+
+split_keywords <- function(raw_keywords){
+    if(length(raw_keywords)== 0) return(character(0))
+    parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
+    parts <- trimws(parts)
+    parts <- parts[nzchar(parts)]
+    tools::toTitleCase(unique(parts)) 
+}
+
 get_metadata_from_zenodo <- function(doi) {
   record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
   url <- paste0("https://zenodo.org/api/records/", record_id)
@@ -159,13 +204,14 @@ get_metadata_from_zenodo <- function(doi) {
   # Handle multiple separators: , ; | newline or tab
   raw_keywords <- data$metadata$keywords
   keywords <- character(0)
-
-  if (length(raw_keywords) > 0) {
-    parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
-    parts <- trimws(parts)
-    parts <- parts[nzchar(parts)]
-    keywords <- tools::toTitleCase(unique(parts)) 
-  }
+  
+  keywords <- split_keywords(raw_keywords)
+  # if (length(raw_keywords) > 0) {
+  #   parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
+  #   parts <- trimws(parts)
+  #   parts <- parts[nzchar(parts)]
+  #   keywords <- tools::toTitleCase(unique(parts)) 
+  # }
 
   list(
     title = title,
@@ -176,22 +222,6 @@ get_metadata_from_zenodo <- function(doi) {
 }
 
 
-get_metadata_from_zenodo2 <- function(doi) {
-  record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
-  url <- paste0("https://zenodo.org/api/records/", record_id)
-
-  res <- httr::GET(url)
-  if (res$status_code != 200) stop("Failed to fetch metadata from Zenodo.")
-
-  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
-
-  title <- data$metadata$title
-  description <- data$metadata$description
-  subjects <- if (!is.null(data$metadata$keywords)) data$metadata$keywords else character(0)
-  keywords <- subjects  # Zenodo often mixes subject/keywords
-
-  list(title = title, description = description, subjects = subjects, keywords = keywords)
-}
 
 get_metadata_from_figshare <- function(doi) {
   article_id <- sub(".*figshare\\.(\\d+)", "\\1", doi)
