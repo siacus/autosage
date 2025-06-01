@@ -416,6 +416,23 @@ extract_keywords <- function(answer) {
   stringr::str_replace_all(items, "^['\"]|['\"]$", "")
 }
 
+
+get_responses <- function(answer) {
+  bracket_start <- regexpr("\\[\\[?\\s*['\"]", answer)
+  if (bracket_start == -1) return(character(0))
+  substr_answer <- substr(answer, bracket_start, nchar(answer))
+  if (str_count(substr_answer, "\\[") > str_count(substr_answer, "\\]")) {
+    substr_answer <- paste0(substr_answer, "]")
+  }
+  matches <- str_match_all(substr_answer, "'([^']+)'|\"([^\"]+)\"")[[1]]
+  labels <- na.omit(c(matches[,2], matches[,3]))
+  unquoted_tail <- str_match(substr_answer, ".*,\\s*['\"]?([^'\"\\]]+?)\\s*(\\]|$)")[,2]
+  if (!is.na(unquoted_tail) && nchar(unquoted_tail) > 3 && !unquoted_tail %in% labels) {
+    labels <- c(labels, unquoted_tail)
+  }
+  unique(labels)
+}
+
 query_categories <- function(title, description) {
   prompt <- create_prompt(title, description)
   payload <- list(model = "llama", messages = list(list(role = "user", content = prompt)), temperature = 0.0, max_tokens = 50)
@@ -574,12 +591,16 @@ observeEvent(input$add_keyword, {
   observeEvent(input$grab_doi, {
   req(input$doi_input)
   withProgress(message = "Fetching metadata...", value = 0, {
-    #repo <- guess_repository_from_doi(input$doi_input)
-    #repo_name(repo)
 
-    #md <- get_dataset_metadata(input$doi_input)
+    md <- tryCatch({
+      get_dataset_metadata(input$doi_input)
+    }, error = function(e) {
+      showNotification("This DOI is not supported or is invalid.", type = "error", duration = 6)
+    return(NULL)
+    })
 
-    md <- get_dataset_metadata(input$doi_input)
+    if (is.null(md)) return()  # Don't proceed if metadata retrieval failed
+
     repo_name(tools::toTitleCase(md$repo_label))  # Capitalize for display
 
     updateTextInput(session, "title", value = md$title)
