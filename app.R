@@ -49,6 +49,13 @@ map_fos_to_app_subject <- function(fos_labels) {
   }, character(1))
 }
 
+append_keywords <- function(existing, new) {
+  norm_existing <- normalize_keywords(existing)
+  norm_new <- normalize_keywords(new)
+  to_add <- new[!(norm_new %in% norm_existing)]
+  unique(c(existing, format_keywords(to_add)))
+}
+
 guess_repository_from_doi <- function(doi) {
   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
 
@@ -137,26 +144,39 @@ get_metadata_from_dryad <- function(doi) {
     keywords = keywords
   )
 }
+get_metadata_from_zenodo <- function(doi) {
+  record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
+  url <- paste0("https://zenodo.org/api/records/", record_id)
 
-get_metadata_from_dryad2 <- function(doi) {
-  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
-  url <- paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE))
-print(url)
   res <- httr::GET(url)
-  print(res)
-  if (res$status_code != 200) stop("Failed to fetch metadata from DataCite for Dryad.")
+  if (res$status_code != 200) stop("Failed to fetch metadata from Zenodo.")
 
-  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))$data$attributes
-print(str(data))
-  title <- data$titles[[1]]$title
-  description <- data$descriptions[[1]]$description
-  subjects <- vapply(data$subjects, function(s) s$subject, character(1))
-  keywords <- character(0)  # Dryad does not expose structured keywords via DataCite
+  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
 
-  list(title = title, description = description, subjects = subjects, keywords = keywords)
+  title <- data$metadata$title
+  description <- data$metadata$description
+
+  # Handle multiple separators: , ; | newline or tab
+  raw_keywords <- data$metadata$keywords
+  keywords <- character(0)
+
+  if (length(raw_keywords) > 0) {
+    parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
+    parts <- trimws(parts)
+    parts <- parts[nzchar(parts)]
+    keywords <- tools::toTitleCase(unique(parts)) 
+  }
+
+  list(
+    title = title,
+    description = description,
+    subjects = "Other",
+    keywords = keywords
+  )
 }
 
-get_metadata_from_zenodo <- function(doi) {
+
+get_metadata_from_zenodo2 <- function(doi) {
   record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
   url <- paste0("https://zenodo.org/api/records/", record_id)
 
@@ -341,16 +361,17 @@ ui <- dashboardPage(
   )
 )
 
-server <- function(input, output, session) {
-  categories <- reactiveVal()
-  keywords <- reactiveValues()
-  normalize_keywords <- function(x) {
+normalize_keywords <- function(x) {
     tolower(trimws(x))
   }
   format_keywords <- function(x) {
     tools::toTitleCase(trimws(x))
   }
 
+server <- function(input, output, session) {
+  categories <- reactiveVal()
+  keywords <- reactiveValues()
+  
   observeEvent(input$generate, {
     cats <- NULL
     withProgress(message = "Generating suggestions...", value = 0, {
@@ -358,7 +379,10 @@ server <- function(input, output, session) {
       incProgress(0.3)
       categories(cats)
       for (i in seq_along(cats)) {
-        keywords[[cats[i]]] <- query_keywords(input$title, input$description, cats[i])
+        new_kws <- query_keywords(input$title, input$description, cats[i])
+        existing_kws <- keywords[[cats[i]]]
+        keywords[[cats[i]]] <- append_keywords(existing_kws, new_kws)
+#        keywords[[cats[i]]] <- query_keywords(input$title, input$description, cats[i])
         incProgress(0.7 / length(cats))
       }
     })
