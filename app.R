@@ -66,6 +66,8 @@ guess_repository_from_doi <- function(doi) {
   if (grepl("^10\\.6084/m9.figshare", doi, ignore.case = TRUE)) return("figshare")
   if (grepl("^10\\.5061/dryad", doi, ignore.case = TRUE)) return("dryad")
   if (grepl("^10\\.17632/", doi, ignore.case = TRUE)) return("mendeley")
+  if (grepl("^10\\.25934/", doi, ignore.case = TRUE)) return("vivli")
+  if (grepl("osf.io", doi, ignore.case = TRUE)) return("osf")
 
   # Fallback: resolve via DataCite
   tryCatch({
@@ -87,12 +89,9 @@ guess_repository_from_doi <- function(doi) {
 }
 
 
-
 get_metadata_from_dataverse <- function(doi) {
-  # Clean and extract DOI
   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
 
-  # Get correct base URL from DataCite
   base_url <- tryCatch({
     res <- httr::GET(paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE)))
     if (res$status_code != 200) stop("Failed to resolve DOI")
@@ -103,6 +102,11 @@ get_metadata_from_dataverse <- function(doi) {
     warning("Could not resolve Dataverse base URL, falling back to Harvard")
     "https://dataverse.harvard.edu"
   })
+
+  # Extract installation name
+  install_name <- tools::toTitleCase(sub("https?://(dataverse\\.)?|\\..*", "", basename(base_url)))
+  publisher <- tolower(data$data$attributes$publisher)
+  
 
   # Query Dataverse API
   api_url <- paste0(base_url, "/api/datasets/:persistentId")
@@ -124,8 +128,16 @@ get_metadata_from_dataverse <- function(doi) {
     split_keywords(raw_keywords)
   }, error = function(e) character(0))
 
-  list(title = title, description = description, subjects = subjects, keywords = keywords)
+  list(
+    title = title,
+    description = description,
+    subjects = subjects,
+    keywords = keywords,
+    repo_label = paste("Dataverse (", publisher, ")", sep = "")
+  )
 }
+
+
 
 
 get_metadata_from_dryad <- function(doi) {
@@ -218,6 +230,80 @@ get_metadata_from_mendeley <- function(doi) {
   )
 }
 
+get_metadata_from_osf <- function(doi) {
+  # Normalize the DOI to extract only the OSF ID (e.g., "y2nrb")
+  osf_id <- toupper(sub(".*osf\\.io/([a-z0-9]+)", "\\1", tolower(doi)))
+  url <- paste0("https://api.osf.io/v2/guids/", osf_id, "/")
+
+  res <- httr::GET(url)
+  if (res$status_code != 200) stop("Failed to fetch metadata from OSF.")
+
+  data <- jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"))
+  title <- tryCatch(data$data$attributes$title, error = function(e) NA)
+  description <- tryCatch(data$data$attributes$description, error = function(e) NA)
+  raw_keywords <- tryCatch(data$data$attributes$tags, error = function(e) character(0))
+  keywords <- split_keywords(raw_keywords)
+  # Subjects come from nested list of data frames
+  raw_subjects <- tryCatch({
+    subject_blocks <- data$data$attributes$subjects
+    if (length(subject_blocks) == 0) character(0)
+    match_to_categories( unlist(lapply(subject_blocks, function(s) s$text)) )
+  }, error = function(e) character(0))
+  # Refine: try to match keywords to additional subject categories
+  all_subjects <- unique(c(raw_subjects, match_to_categories(keywords, max_dist = 0.1)))
+
+
+  list(
+    title = title,
+    description = description,
+    subjects = all_subjects,
+    keywords = keywords
+  )
+}
+
+
+get_metadata_from_vivli <- function(doi) {
+  doi <- sub(".*(10\\.25934/[^\\s]+)", "\\1", doi)
+  url <- paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE))
+  res <- httr::GET(url)
+  if (res$status_code != 200) stop("Failed to fetch metadata from DataCite for Vivli.")
+
+  data <- jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"))
+  attr <- data$data$attributes
+
+  # Extract title
+  title <- tryCatch({
+    titles <- attr$titles
+    if (is.data.frame(titles) && "title" %in% names(titles)) {
+      titles$title[which(nzchar(titles$title))[1]]
+    } else NA
+  }, error = function(e) NA)
+
+  # Extract description
+  description <- tryCatch({
+    desc <- attr$descriptions
+    if (is.data.frame(desc) && "description" %in% names(desc)) {
+      desc$description[which(nzchar(desc$description))[1]]
+    } else NA
+  }, error = function(e) NA)
+
+  # Extract and process keywords
+  raw_keywords <- tryCatch(attr$subjects$subject, error = function(e) character(0))
+  keywords <- split_keywords(raw_keywords)
+
+  # Refined category match from keywords
+  subjects <- match_to_categories(keywords, 0.1) 
+
+  list(
+    title = title,
+    description = description,
+    subjects = subjects,
+    keywords = keywords
+  )
+}
+
+
+
 
 get_metadata_from_zenodo <- function(doi) {
   record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
@@ -274,32 +360,27 @@ get_metadata_from_figshare <- function(doi) {
 }
 
 
+
 get_dataset_metadata <- function(doi) {
   repo <- guess_repository_from_doi(doi)
-  print(repo)
-  switch(repo,
-         "dataverse" = get_metadata_from_dataverse(doi),
-         "zenodo"    = get_metadata_from_zenodo(doi),
-         "figshare"  = get_metadata_from_figshare(doi),
-         "dryad"     = get_metadata_from_dryad(doi),
-         "mendeley" = get_metadata_from_mendeley(doi),
-         stop(paste("Unknown or unsupported repository for DOI:", doi)))
-}
+  fallback_if_null <- function(primary, fallback) {
+    if (!is.null(primary)) primary else fallback
+  }
 
-get_responses <- function(answer) {
-  bracket_start <- regexpr("\\[\\[?\\s*['\"]", answer)
-  if (bracket_start == -1) return(character(0))
-  substr_answer <- substr(answer, bracket_start, nchar(answer))
-  if (str_count(substr_answer, "\\[") > str_count(substr_answer, "\\]")) {
-    substr_answer <- paste0(substr_answer, "]")
-  }
-  matches <- str_match_all(substr_answer, "'([^']+)'|\"([^\"]+)\"")[[1]]
-  labels <- na.omit(c(matches[,2], matches[,3]))
-  unquoted_tail <- str_match(substr_answer, ".*,\\s*['\"]?([^'\"\\]]+?)\\s*(\\]|$)")[,2]
-  if (!is.na(unquoted_tail) && nchar(unquoted_tail) > 3 && !unquoted_tail %in% labels) {
-    labels <- c(labels, unquoted_tail)
-  }
-  unique(labels)
+  metadata <- switch(repo,
+    "dataverse" = get_metadata_from_dataverse(doi),
+    "zenodo"    = get_metadata_from_zenodo(doi),
+    "figshare"  = get_metadata_from_figshare(doi),
+    "dryad"     = get_metadata_from_dryad(doi),
+    "mendeley"  = get_metadata_from_mendeley(doi),
+    "vivli"     = get_metadata_from_vivli(doi),
+    "osf"       = get_metadata_from_osf(doi),
+    stop(paste("Unknown or unsupported repository for DOI:", doi))
+  )
+
+  metadata$repo_label <- fallback_if_null(metadata$repo_label, tools::toTitleCase(repo))
+
+  return(metadata)
 }
 
 match_to_categories <- function(labels, max_dist = 0.7) {
@@ -390,7 +471,7 @@ ui <- dashboardPage(
   dashboardBody(
     tags$head(tags$style(HTML(".subject-badge {background-color: #6c757d; color: white; font-size: 1.1em; padding: 7px 12px; border-radius: 20px; margin: 4px; display: inline-block;} .keyword-badge {background-color: #e9ecef; border: 1px solid #6c757d; font-size: 0.85em; padding: 4px 8px; border-radius: 12px; margin: 3px; display: inline-block;} .keyword-remove-btn {margin-left: 6px; font-size: 0.75em; vertical-align: middle;}"))),
     fluidRow(
-      box(width = 12, title = "Input Data", status = "primary", solidHeader = TRUE,
+      box(width = 12, title = uiOutput("input_box_title"), status = "primary", solidHeader = TRUE,
           textInput("title", "Dataset Title", width = "100%"),
           textAreaInput("description", "Dataset Description", height = "200px", width = "100%"),
           fluidRow( column(width = 6, 
@@ -419,7 +500,8 @@ normalize_keywords <- function(x) {
 server <- function(input, output, session) {
   categories <- reactiveVal()
   keywords <- reactiveValues()
-  
+  repo_name <- reactiveVal(NULL)
+
   observeEvent(input$generate, {
   req(input$title, input$description)
 
@@ -492,23 +574,54 @@ observeEvent(input$add_keyword, {
   observeEvent(input$grab_doi, {
   req(input$doi_input)
   withProgress(message = "Fetching metadata...", value = 0, {
+    #repo <- guess_repository_from_doi(input$doi_input)
+    #repo_name(repo)
+
+    #md <- get_dataset_metadata(input$doi_input)
+
     md <- get_dataset_metadata(input$doi_input)
-    
-    # Update text inputs
+    repo_name(tools::toTitleCase(md$repo_label))  # Capitalize for display
+
     updateTextInput(session, "title", value = md$title)
     updateTextAreaInput(session, "description", value = md$description)
 
-    # Match and set categories
     matched_cats <- match_to_categories(md$subjects)
     categories(matched_cats)
 
-    # Update keywords by category
     for (cat in matched_cats) {
-      # Add all keywords under each category (could be improved with smarter mapping)
       keywords[[cat]] <- unique(format_keywords(md$keywords))
     }
   })
 })
+
+output$input_box_title <- renderUI({
+  if (!is.null(repo_name())) {
+    paste0("Input Data: ", tools::toTitleCase(repo_name()))
+  } else {
+    "Input Data"
+  }
+})
+
+#   observeEvent(input$grab_doi, {
+#   req(input$doi_input)
+#   withProgress(message = "Fetching metadata...", value = 0, {
+#     md <- get_dataset_metadata(input$doi_input)
+    
+#     # Update text inputs
+#     updateTextInput(session, "title", value = md$title)
+#     updateTextAreaInput(session, "description", value = md$description)
+
+#     # Match and set categories
+#     matched_cats <- match_to_categories(md$subjects)
+#     categories(matched_cats)
+
+#     # Update keywords by category
+#     for (cat in matched_cats) {
+#       # Add all keywords under each category (could be improved with smarter mapping)
+#       keywords[[cat]] <- unique(format_keywords(md$keywords))
+#     }
+#   })
+# })
 
 observeEvent(input$regen_llm, {
   req(input$title, input$description)
