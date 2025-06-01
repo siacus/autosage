@@ -13,18 +13,19 @@ This repository contains just the Shiny R application. The app is deployed on a 
 
 The app either loads Title and Description from an existing datasets in Dataverse through its DOI or accepts in input Title and Description. 
 
-DOI works, with some heuristic, with these repositories
+DOI metadata extraction works, with some heuristic, with these repositories:
 
 - **Dataverse** (any installation in the global network)
 - **Zenodo**
 - **Figshare**
 - **Dryad**
 
+although at present not all asubject categories can be matched properly give the different schemas used by the different repositories.
 
 The System is based on llama.cpp server offering the two models through API and a Shiny App.
 Future plan is to improve APIs using an openAPI layer that talks to llama-server and provide the output in a canonical format.
 
-The app will one day support more repositories from the GREI initiative (Zenodo, Figshare, etc) and an export functionalities.
+The app will one day support export functionalities and more automati metadata curation.
 
 # Requirements for this app
 Install R
