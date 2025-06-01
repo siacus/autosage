@@ -27,7 +27,7 @@ Install XQuart from: [https://www.xquartz.org](https://www.xquartz.org)
 
 Install these packages in your R environment
 
-`install.packages(c("shiny", "shinydashboard", "httr", "jsonlite", "stringr", "stringdist"))`
+`install.packages(c("shiny", "shinydashboard", "httr", "jsonlite", "stringr", "stringdist","shinyWidgets"))`
 
 # Try it!
 http://140.247.120.209:8083/

@@ -4,6 +4,7 @@ library(httr)
 library(jsonlite)
 library(stringr)
 library(stringdist)
+library(shinyWidgets)
 
 subjects <- fromJSON("categories.json")
 
@@ -222,9 +223,9 @@ get_metadata_from_zenodo <- function(doi) {
 }
 
 
-
 get_metadata_from_figshare <- function(doi) {
-  article_id <- sub(".*figshare\\.(\\d+)", "\\1", doi)
+  # Extract numeric article ID (ignore version suffix)
+  article_id <- sub(".*figshare\\.(\\d+)(\\.v\\d+)?", "\\1", doi)
   url <- paste0("https://api.figshare.com/v2/articles/", article_id)
 
   res <- httr::GET(url)
@@ -234,11 +235,22 @@ get_metadata_from_figshare <- function(doi) {
 
   title <- data$title
   description <- data$description
-  subjects <- if (!is.null(data$categories)) unlist(data$categories) else character(0)
+
+  # Extract subject categories if present
+  subjects <- character(0)
+  if (!is.null(data$categories) && is.data.frame(data$categories)) {
+    if ("title" %in% names(data$categories)) {
+      subjects <- unique(trimws(data$categories$title))
+    }
+  }
+
+  # Tags are used as keywords
   keywords <- data$tags
+  if (is.null(keywords)) keywords <- character(0)
 
   list(title = title, description = description, subjects = subjects, keywords = keywords)
 }
+
 
 get_dataset_metadata <- function(doi) {
   repo <- guess_repository_from_doi(doi)
@@ -318,27 +330,6 @@ query_keywords <- function(title, description, subject) {
 }
 
 
-# get_dataset_metadata <- function(doi, base_url = "https://dataverse.harvard.edu") {
-#   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
-#   url <- paste0(base_url, "/api/datasets/:persistentId")
-#   res <- httr::GET(url, query = list(persistentId = paste0("doi:", doi)))
-#   if (res$status_code != 200) stop("Failed to fetch dataset info.")
-#   data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
-#   fields <- data$data$latestVersion$metadataBlocks$citation$fields
-
-#   title <- tryCatch({ fields$value[fields$typeName == "title"][[1]] }, error = function(e) NA)
-#   description <- tryCatch({
-#     desc_df <- fields$value[[which(fields$typeName == "dsDescription")]]
-#     desc_df$dsDescriptionValue$value[1]
-#   }, error = function(e) NA)
-#   subjects <- tryCatch({ fields$value[fields$typeName == "subject"][[1]] }, error = function(e) character(0))
-#   keywords <- tryCatch({
-#     kw_block <- fields$value[[which(fields$typeName == "keyword")]]
-#     kw_block$keywordValue$value
-#   }, error = function(e) character(0))
-
-#   list(title = title, description = description, subjects = subjects, keywords = keywords)
-# }
 
 
 ui <- dashboardPage(
@@ -379,7 +370,11 @@ ui <- dashboardPage(
       box(width = 12, title = "Input Data", status = "primary", solidHeader = TRUE,
           textInput("title", "Dataset Title", width = "100%"),
           textAreaInput("description", "Dataset Description", height = "200px", width = "100%"),
-          actionButton("generate", "Suggest Subject Categories")
+          fluidRow( column(width = 6, 
+                            actionButton("generate", "Suggest Subject Categories") ),
+                    column(width = 6, 
+                            materialSwitch(inputId = "overwrite_keywords", label = "Overwrite Existing Keywords?",
+                                            value = FALSE, status = "primary", right = TRUE ))
       )
     ),
     fluidRow(
@@ -388,8 +383,8 @@ ui <- dashboardPage(
     fluidRow(
       box(width = 12, title = "Keywords by Category", status = "info", solidHeader = TRUE, uiOutput("keyword_lists"))
     )
-  )
-)
+    )
+))
 
 normalize_keywords <- function(x) {
     tolower(trimws(x))
@@ -403,20 +398,40 @@ server <- function(input, output, session) {
   keywords <- reactiveValues()
   
   observeEvent(input$generate, {
-    cats <- NULL
-    withProgress(message = "Generating suggestions...", value = 0, {
-      cats <- match_to_categories(query_categories(input$title, input$description))
-      incProgress(0.3)
-      categories(cats)
-      for (i in seq_along(cats)) {
-        new_kws <- query_keywords(input$title, input$description, cats[i])
-        existing_kws <- keywords[[cats[i]]]
-        keywords[[cats[i]]] <- append_keywords(existing_kws, new_kws)
-#        keywords[[cats[i]]] <- query_keywords(input$title, input$description, cats[i])
-        incProgress(0.7 / length(cats))
+  req(input$title, input$description)
+
+  withProgress(message = "Generating suggestions...", value = 0, {
+    # LLM category suggestions
+    new_cats <- match_to_categories(query_categories(input$title, input$description))
+    incProgress(0.3)
+
+    # Merge with existing
+    current_cats <- categories()
+    updated_cats <- unique(c(current_cats, new_cats))
+    categories(updated_cats)
+
+    # Determine which categories to update
+    target_cats <- if (isTRUE(input$overwrite_keywords)) updated_cats else new_cats
+
+    for (cat in target_cats) {
+      new_kws <- trimws(query_keywords(input$title, input$description, cat))
+
+      if (isTRUE(input$overwrite_keywords)) {
+        keywords[[cat]] <- unique(format_keywords(new_kws))
+      } else {
+        existing_kws <- keywords[[cat]]
+        norm_existing <- normalize_keywords(existing_kws)
+        norm_new <- normalize_keywords(new_kws)
+        to_add <- new_kws[!(norm_new %in% norm_existing)]
+        keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
       }
-    })
+
+      incProgress(0.7 / length(target_cats))
+    }
   })
+})
+
+
 
   observeEvent(input$add_button, {
   cat <- input$add_category
@@ -484,16 +499,42 @@ observeEvent(input$regen_llm, {
 
     for (cat in new_cats) {
       new_kws <- trimws(query_keywords(input$title, input$description, cat))
-      existing_kws <- keywords[[cat]]
       
-      norm_existing <- normalize_keywords(existing_kws)
-      norm_new <- normalize_keywords(new_kws)
-      to_add <- new_kws[!(norm_new %in% norm_existing)]
-
-      keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
+      if (isTRUE(input$overwrite_keywords)) {
+        keywords[[cat]] <- unique(format_keywords(new_kws))
+      } else {
+        existing_kws <- keywords[[cat]]
+        norm_existing <- normalize_keywords(existing_kws)
+        norm_new <- normalize_keywords(new_kws)
+        to_add <- new_kws[!(norm_new %in% norm_existing)]
+        keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
+      }
     }
   })
 })
+
+# observeEvent(input$regen_llm2, {
+#   req(input$title, input$description)
+#   withProgress(message = "Generating suggestions...", value = 0, {
+#     new_cats <- match_to_categories(query_categories(input$title, input$description))
+#     incProgress(0.3)
+
+#     current_cats <- categories()
+#     updated_cats <- unique(c(current_cats, new_cats))
+#     categories(updated_cats)
+
+#     for (cat in new_cats) {
+#       new_kws <- trimws(query_keywords(input$title, input$description, cat))
+#       existing_kws <- keywords[[cat]]
+      
+#       norm_existing <- normalize_keywords(existing_kws)
+#       norm_new <- normalize_keywords(new_kws)
+#       to_add <- new_kws[!(norm_new %in% norm_existing)]
+
+#       keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
+#     }
+#   })
+# })
 
 
 
