@@ -15,6 +15,192 @@ create_prompt <- function(title, description) {
   )
 }
 
+fos_to_app_subject <- list(
+  "Biological sciences" = "Medicine, Health and Life Sciences",
+  "Mathematics" = "Mathematical Sciences",
+  "Computer and information sciences" = "Computer and Information Science",
+  "Physical sciences" = "Physics",
+  "Chemical sciences" = "Chemistry",
+  "Earth and related environmental sciences" = "Earth and Environmental Sciences",
+  "Agricultural sciences" = "Agricultural Sciences",
+  "Medical and Health sciences" = "Medicine, Health and Life Sciences",
+  "Engineering and technology" = "Engineering",
+  "Psychology" = "Social Sciences",
+  "Social sciences" = "Social Sciences",
+  "Economics and business" = "Business and Management",
+  "Law" = "Law",
+  "Arts" = "Arts and Humanities",
+  "History and archaeology" = "Arts and Humanities",
+  "Languages and literature" = "Arts and Humanities",
+  "Philosophy, ethics and religion" = "Arts and Humanities",
+  "Astronomy" = "Astronomy and Astrophysics"
+)
+
+map_fos_to_app_subject <- function(fos_labels) {
+  vapply(fos_labels, function(fos) {
+    clean_fos <- trimws(sub("^FOS:\\s*", "", fos))
+    # Try direct mapping
+    mapped <- fos_to_app_subject[[clean_fos]]
+    if (!is.null(mapped)) return(mapped)
+    # Fallback fuzzy match
+    dists <- stringdist::stringdist(tolower(clean_fos), tolower(categories), method = "jw")
+    best <- which.min(dists)
+    if (dists[best] < 0.2) categories[best] else NA
+  }, character(1))
+}
+
+guess_repository_from_doi <- function(doi) {
+  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
+
+  # Use prefixes or known patterns for now — expand as needed
+  if (grepl("^10\\.7910/DVN", doi, ignore.case = TRUE)) return("dataverse")
+  if (grepl("^10\\.5281/zenodo", doi, ignore.case = TRUE)) return("zenodo")
+  if (grepl("^10\\.6084/m9.figshare", doi, ignore.case = TRUE)) return("figshare")
+  if (grepl("^10\\.5061/dryad", doi, ignore.case = TRUE)) return("dryad")
+
+  return("unknown")
+}
+
+get_metadata_from_dataverse <- function(doi, base_url = "https://dataverse.harvard.edu") {
+  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
+  url <- paste0(base_url, "/api/datasets/:persistentId")
+  res <- httr::GET(url, query = list(persistentId = paste0("doi:", doi)))
+  if (res$status_code != 200) stop("Failed to fetch dataset info.")
+  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
+  fields <- data$data$latestVersion$metadataBlocks$citation$fields
+
+  title <- tryCatch({ fields$value[fields$typeName == "title"][[1]] }, error = function(e) NA)
+  description <- tryCatch({
+    desc_df <- fields$value[[which(fields$typeName == "dsDescription")]]
+    desc_df$dsDescriptionValue$value[1]
+  }, error = function(e) NA)
+  subjects <- tryCatch({ fields$value[fields$typeName == "subject"][[1]] }, error = function(e) character(0))
+  keywords <- tryCatch({
+    kw_block <- fields$value[[which(fields$typeName == "keyword")]]
+    kw_block$keywordValue$value
+  }, error = function(e) character(0))
+
+  list(title = title, description = description, subjects = subjects, keywords = keywords)
+}
+
+get_metadata_from_dryad <- function(doi) {
+  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
+  url <- paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE))
+
+  res <- httr::GET(url)
+  if (res$status_code != 200) stop("Failed to fetch metadata from DataCite for Dryad.")
+
+  full_data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
+
+  if (!"data" %in% names(full_data) || !"attributes" %in% names(full_data$data)) {
+    stop("Unexpected metadata format from DataCite.")
+  }
+
+  data <- full_data$data$attributes
+  title <- tryCatch({
+    if (is.data.frame(data$titles) && "title" %in% names(data$titles)) {
+      data$titles$title[1]
+    } else NA
+  }, error = function(e) NA)
+
+  description <- tryCatch({
+    if (!is.null(data$descriptions) && is.data.frame(data$descriptions) && nrow(data$descriptions) > 0) {
+      abstract_row <- data$descriptions[data$descriptions$descriptionType == "Abstract", ]
+      if (nrow(abstract_row) > 0) {
+        abstract_row$description[1]
+      } else {
+        data$descriptions$description[1]
+      }
+    } else NA
+  }, error = function(e) NA)
+
+  subjects <- tryCatch({
+    if(is.null(data$subjects)) character(0)
+    idx <- grep("FOS:", data$subjects$subject)
+    if(length(idx)==0) character(0)
+    cleaned <- substring(data$subjects$subject[idx], 5)
+    cleaned <- map_fos_to_app_subject(cleaned)
+    unique(na.omit(trimws(cleaned)))
+  }, error = function(e) character(0))
+
+  keywords <- tryCatch({
+    if(is.null(data$subjects)) character(0)
+    idx <- which(is.na(data$subjects$subjectScheme) | data$subjects$subjectScheme == "")
+    if(length(idx)==0) character(0)
+    unique(na.omit(trimws(data$subjects$subject[idx])))
+  }, error = function(e) character(0))
+
+  list(
+    title = title,
+    description = description,
+    subjects = subjects,
+    keywords = keywords
+  )
+}
+
+get_metadata_from_dryad2 <- function(doi) {
+  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
+  url <- paste0("https://api.datacite.org/dois/", URLencode(doi, reserved = TRUE))
+print(url)
+  res <- httr::GET(url)
+  print(res)
+  if (res$status_code != 200) stop("Failed to fetch metadata from DataCite for Dryad.")
+
+  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))$data$attributes
+print(str(data))
+  title <- data$titles[[1]]$title
+  description <- data$descriptions[[1]]$description
+  subjects <- vapply(data$subjects, function(s) s$subject, character(1))
+  keywords <- character(0)  # Dryad does not expose structured keywords via DataCite
+
+  list(title = title, description = description, subjects = subjects, keywords = keywords)
+}
+
+get_metadata_from_zenodo <- function(doi) {
+  record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
+  url <- paste0("https://zenodo.org/api/records/", record_id)
+
+  res <- httr::GET(url)
+  if (res$status_code != 200) stop("Failed to fetch metadata from Zenodo.")
+
+  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
+
+  title <- data$metadata$title
+  description <- data$metadata$description
+  subjects <- if (!is.null(data$metadata$keywords)) data$metadata$keywords else character(0)
+  keywords <- subjects  # Zenodo often mixes subject/keywords
+
+  list(title = title, description = description, subjects = subjects, keywords = keywords)
+}
+
+get_metadata_from_figshare <- function(doi) {
+  article_id <- sub(".*figshare\\.(\\d+)", "\\1", doi)
+  url <- paste0("https://api.figshare.com/v2/articles/", article_id)
+
+  res <- httr::GET(url)
+  if (res$status_code != 200) stop("Failed to fetch metadata from Figshare.")
+
+  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
+
+  title <- data$title
+  description <- data$description
+  subjects <- if (!is.null(data$categories)) unlist(data$categories) else character(0)
+  keywords <- data$tags
+
+  list(title = title, description = description, subjects = subjects, keywords = keywords)
+}
+
+get_dataset_metadata <- function(doi) {
+  repo <- guess_repository_from_doi(doi)
+  print(repo)
+  switch(repo,
+         "dataverse" = get_metadata_from_dataverse(doi),
+         "zenodo"    = get_metadata_from_zenodo(doi),
+         "figshare"  = get_metadata_from_figshare(doi),
+         "dryad"     = get_metadata_from_dryad(doi),
+         stop(paste("Unknown or unsupported repository for DOI:", doi)))
+}
+
 get_responses <- function(answer) {
   bracket_start <- regexpr("\\[\\[?\\s*['\"]", answer)
   if (bracket_start == -1) return(character(0))
@@ -82,27 +268,28 @@ query_keywords <- function(title, description, subject) {
 }
 
 
-get_dataset_metadata <- function(doi, base_url = "https://dataverse.harvard.edu") {
-  doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
-  url <- paste0(base_url, "/api/datasets/:persistentId")
-  res <- httr::GET(url, query = list(persistentId = paste0("doi:", doi)))
-  if (res$status_code != 200) stop("Failed to fetch dataset info.")
-  data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
-  fields <- data$data$latestVersion$metadataBlocks$citation$fields
+# get_dataset_metadata <- function(doi, base_url = "https://dataverse.harvard.edu") {
+#   doi <- sub(".*(10\\.[0-9]+/[^\\s]+)", "\\1", doi)
+#   url <- paste0(base_url, "/api/datasets/:persistentId")
+#   res <- httr::GET(url, query = list(persistentId = paste0("doi:", doi)))
+#   if (res$status_code != 200) stop("Failed to fetch dataset info.")
+#   data <- jsonlite::fromJSON(content(res, as = "text", encoding = "UTF-8"))
+#   fields <- data$data$latestVersion$metadataBlocks$citation$fields
 
-  title <- tryCatch({ fields$value[fields$typeName == "title"][[1]] }, error = function(e) NA)
-  description <- tryCatch({
-    desc_df <- fields$value[[which(fields$typeName == "dsDescription")]]
-    desc_df$dsDescriptionValue$value[1]
-  }, error = function(e) NA)
-  subjects <- tryCatch({ fields$value[fields$typeName == "subject"][[1]] }, error = function(e) character(0))
-  keywords <- tryCatch({
-    kw_block <- fields$value[[which(fields$typeName == "keyword")]]
-    kw_block$keywordValue$value
-  }, error = function(e) character(0))
+#   title <- tryCatch({ fields$value[fields$typeName == "title"][[1]] }, error = function(e) NA)
+#   description <- tryCatch({
+#     desc_df <- fields$value[[which(fields$typeName == "dsDescription")]]
+#     desc_df$dsDescriptionValue$value[1]
+#   }, error = function(e) NA)
+#   subjects <- tryCatch({ fields$value[fields$typeName == "subject"][[1]] }, error = function(e) character(0))
+#   keywords <- tryCatch({
+#     kw_block <- fields$value[[which(fields$typeName == "keyword")]]
+#     kw_block$keywordValue$value
+#   }, error = function(e) character(0))
 
-  list(title = title, description = description, subjects = subjects, keywords = keywords)
-}
+#   list(title = title, description = description, subjects = subjects, keywords = keywords)
+# }
+
 
 ui <- dashboardPage(
    dashboardHeader(
