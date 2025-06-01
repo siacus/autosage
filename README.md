@@ -25,7 +25,7 @@ although, at present, not all subject categories can be matched properly give th
 The System is based on llama.cpp server offering the two models through API and a Shiny App.
 Future plan is to improve APIs using an openAPI layer that talks to llama-server and provide the output in a canonical format.
 
-The app will one day support export functionalities and more automati metadata curation.
+The app will one day support export functionalities and more automatic metadata curation. Please open issues for feature requests.
 
 # Requirements for this app
 Install R
