@@ -13,7 +13,11 @@ This repository contains just the Shiny R application. The app is deployed on a 
 
 The app either loads Title and Description from an existing datasets in Dataverse through its DOI or accepts in input Title and Description. 
 
-DOI works only for Dataverse at the moment. More repositories can be added.
+DOI works, with some heuristic, with these repositories
+-- Dataverse (any from the network)
+-- Zenodo
+-- Figshare
+-- Dryad
 
 The System is based on llama.cpp server offering the two models through API and a Shiny App.
 Future plan is to improve APIs using an openAPI layer that talks to llama-server and provide the output in a canonical format.
