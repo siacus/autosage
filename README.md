@@ -19,6 +19,7 @@ DOI metadata extraction works, with some heuristic, with these repositories:
 - **Zenodo**
 - **Figshare**
 - **Dryad**
+- **Mendeley**
 
 although, at present, not all subject categories can be matched properly give the different schemas used by the different repositories.
 

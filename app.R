@@ -65,6 +65,7 @@ guess_repository_from_doi <- function(doi) {
   if (grepl("^10\\.5281/zenodo", doi, ignore.case = TRUE)) return("zenodo")
   if (grepl("^10\\.6084/m9.figshare", doi, ignore.case = TRUE)) return("figshare")
   if (grepl("^10\\.5061/dryad", doi, ignore.case = TRUE)) return("dryad")
+  if (grepl("^10\\.17632/", doi, ignore.case = TRUE)) return("mendeley")
 
   # Fallback: resolve via DataCite
   tryCatch({
@@ -183,12 +184,40 @@ get_metadata_from_dryad <- function(doi) {
 }
 
 split_keywords <- function(raw_keywords){
+    # Handle multiple separators: , ; | newline or tab
     if(length(raw_keywords)== 0) return(character(0))
     parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
     parts <- trimws(parts)
     parts <- parts[nzchar(parts)]
     tools::toTitleCase(unique(parts)) 
 }
+
+get_metadata_from_mendeley <- function(doi) {
+  doi <- sub(".*(10\\.\\d{4,9}/[^\\s]+)", "\\1", doi)
+  record_id <- sub(".*/", "", doi)  # Extract dataset ID
+  record_id <- sub("\\.\\d+$", "", record_id)  # Remove version suffix (e.g., .2)
+
+  url <- paste0("https://data.mendeley.com/public-api/datasets/", record_id)
+  res <- httr::GET(url)
+
+  if (res$status_code != 200) stop("Failed to fetch metadata from Mendeley Data.")
+
+  data <- jsonlite::fromJSON(httr::content(res, as = "text", encoding = "UTF-8"))
+  title <- data$name
+  description <- data$description
+  raw_keywords <- tryCatch(data$categories$label, error = function(e) character(0))
+  keywords <- split_keywords(raw_keywords)
+
+  subjects <- if (!is.null(data$discipline)) data$discipline else "Other"
+
+  list(
+    title = title,
+    description = description,
+    subjects = match_to_categories(keywords),
+    keywords = split_keywords(keywords)
+  )
+}
+
 
 get_metadata_from_zenodo <- function(doi) {
   record_id <- sub(".*zenodo\\.(\\d+)", "\\1", doi)
@@ -202,18 +231,11 @@ get_metadata_from_zenodo <- function(doi) {
   title <- data$metadata$title
   description <- data$metadata$description
 
-  # Handle multiple separators: , ; | newline or tab
   raw_keywords <- data$metadata$keywords
   keywords <- character(0)
   
   keywords <- split_keywords(raw_keywords)
-  # if (length(raw_keywords) > 0) {
-  #   parts <- unlist(strsplit(raw_keywords, "\\s*(,|;|\\||\\n|\\t)\\s*"))
-  #   parts <- trimws(parts)
-  #   parts <- parts[nzchar(parts)]
-  #   keywords <- tools::toTitleCase(unique(parts)) 
-  # }
-
+ 
   list(
     title = title,
     description = description,
@@ -260,6 +282,7 @@ get_dataset_metadata <- function(doi) {
          "zenodo"    = get_metadata_from_zenodo(doi),
          "figshare"  = get_metadata_from_figshare(doi),
          "dryad"     = get_metadata_from_dryad(doi),
+         "mendeley" = get_metadata_from_mendeley(doi),
          stop(paste("Unknown or unsupported repository for DOI:", doi)))
 }
 
@@ -291,7 +314,7 @@ match_to_categories <- function(labels, max_dist = 0.7) {
         best_subject <- subjects[which.min(dists)]
       }
     }
-    if (best_distance <= max_dist) return(best_subject) else return(NULL)
+    if (best_distance <= max_dist) return(best_subject) else return("Other")
   })
   unique(na.omit(unlist(results)))
 }
@@ -512,30 +535,6 @@ observeEvent(input$regen_llm, {
     }
   })
 })
-
-# observeEvent(input$regen_llm2, {
-#   req(input$title, input$description)
-#   withProgress(message = "Generating suggestions...", value = 0, {
-#     new_cats <- match_to_categories(query_categories(input$title, input$description))
-#     incProgress(0.3)
-
-#     current_cats <- categories()
-#     updated_cats <- unique(c(current_cats, new_cats))
-#     categories(updated_cats)
-
-#     for (cat in new_cats) {
-#       new_kws <- trimws(query_keywords(input$title, input$description, cat))
-#       existing_kws <- keywords[[cat]]
-      
-#       norm_existing <- normalize_keywords(existing_kws)
-#       norm_new <- normalize_keywords(new_kws)
-#       to_add <- new_kws[!(norm_new %in% norm_existing)]
-
-#       keywords[[cat]] <- unique(c(existing_kws, format_keywords(to_add)))
-#     }
-#   })
-# })
-
 
 
 
