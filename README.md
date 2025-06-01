@@ -20,7 +20,7 @@ DOI metadata extraction works, with some heuristic, with these repositories:
 - **Figshare**
 - **Dryad**
 
-although at present not all asubject categories can be matched properly give the different schemas used by the different repositories.
+although, at present, not all subject categories can be matched properly give the different schemas used by the different repositories.
 
 The System is based on llama.cpp server offering the two models through API and a Shiny App.
 Future plan is to improve APIs using an openAPI layer that talks to llama-server and provide the output in a canonical format.
