@@ -471,7 +471,7 @@ ui <- dashboardPage(
       actionButton("add_keyword", "Add Keyword(s)"),
       tags$hr(),  
       textInput("doi_input", "Enter Dataset DOI"),
-      actionButton("grab_doi", "Grab Data"),
+      actionButton("grab_doi", "Get Metadata From Repository"),
       tags$hr(),
       actionButton("regen_llm", "Suggest More Metadata"),
       actionButton("reset_all", "Reset Data"),

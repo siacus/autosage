@@ -77,5 +77,7 @@ http://140.247.120.209:8083/
 launchctl load ~/Library/LaunchAgents/com.service.shinySage.plist
 
 ## launch llama-server(s) at reboot/startup/login
+launchctl load ~/Library/LaunchAgents/com.service.llamaServers.plist
+
 
 
